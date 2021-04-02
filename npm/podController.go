@@ -59,8 +59,8 @@ func newNpmPod(podObj *corev1.Pod) *NpmPod {
 		PodIP:           podObj.Status.PodIP,
 		PodIPs:          podObj.Status.PodIPs,
 		IsHostNetwork:   podObj.Spec.HostNetwork,
-		Labels:          podObj.Labels,
-		ContainerPorts:  getContainerPortList(podObj),
+		Labels:          make(map[string]string),
+		ContainerPorts:  []corev1.ContainerPort{},
 		ResourceVersion: rv,
 		Phase:           podObj.Status.Phase,
 	}
@@ -90,6 +90,27 @@ func (nPod *NpmPod) getPodObjFromNpmPodObj() *corev1.Pod {
 			},
 		},
 	}
+}
+
+func (nPod *NpmPod) appendLabels(new map[string]string, clear bool) {
+	if clear {
+		nPod.Labels = make(map[string]string)
+	}
+	for k, v := range new {
+		nPod.Labels[k] = v
+	}
+}
+
+func (nPod *NpmPod) removeLabelsWithKey(key string) {
+	delete(nPod.Labels, key)
+}
+
+func (nPod *NpmPod) appendContainerPorts(podObj *corev1.Pod) {
+	nPod.ContainerPorts = getContainerPortList(podObj)
+}
+
+func (nPod *NpmPod) removeContainerPorts(podObj *corev1.Pod) {
+	nPod.ContainerPorts = []corev1.ContainerPort{}
 }
 
 type podController struct {
@@ -398,22 +419,31 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 		return fmt.Errorf("[syncAddedPod] Error: failed to add pod to namespace ipset with err: %v", err)
 	}
 
+	// add the Pod info to the podMap
+	c.npMgr.PodMap[podKey] = npmPodObj
+
 	// Get lists of podLabelKey and podLabelKey + podLavelValue ,and then start adding them to ipsets.
-	addToIPSets := util.GetIPSetListFromLabels(npmPodObj.Labels)
-	for _, addIPSetName := range addToIPSets {
-		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, addIPSetName)
-		if err = ipsMgr.AddToSet(addIPSetName, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
+	//addToIPSets := util.GetIPSetListFromLabels(npmPodObj.Labels)
+	for labelKey, labelVal := range npmPodObj.Labels {
+		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, labelKey)
+		if err = ipsMgr.AddToSet(labelKey, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
 			return fmt.Errorf("[syncAddedPod] Error: failed to add pod to label ipset with err: %v", err)
 		}
+
+		podIPSetName := util.GetIpSetFromLabelKV(labelKey, labelVal)
+		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, podIPSetName)
+		if err = ipsMgr.AddToSet(podIPSetName, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
+			return fmt.Errorf("[syncAddedPod] Error: failed to add pod to label ipset with err: %v", err)
+		}
+		npmPodObj.appendLabels(map[string]string{labelKey: labelVal}, false)
 	}
 
 	// Add pod's named ports from its ipset.
 	if err = manageNamedPortIpsets(ipsMgr, npmPodObj.ContainerPorts, podKey, npmPodObj.PodIP, AddNamedPortIpsets); err != nil {
 		return fmt.Errorf("[syncAddedPod] Error: failed to add pod to named port ipset with err: %v", err)
 	}
+	npmPodObj.appendContainerPorts(podObj)
 
-	// add the Pod info to the podMap
-	c.npMgr.PodMap[podKey] = npmPodObj
 	return nil
 }
 
@@ -477,7 +507,8 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		if err = ipsMgr.AddToSet(newPodObjNs, newPodObj.Status.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to add pod to namespace ipset with err: %v", err)
 		}
-	} else { // the IP addresses of the cached npmPod and newPodObj is the same
+	} else {
+		// the IP addresses of the cached npmPod and newPodObj is the same
 		// If no change in labels, then GetIPSetListCompareLabels will return empty list.
 		// Otherwise it returns list of deleted PodIP from cached pod's labels and list of added PodIp from new pod's labels
 		addToIPSets, deleteFromIPSets = util.GetIPSetListCompareLabels(cachedNpmPodObj.Labels, newPodObj.Labels)
@@ -489,16 +520,15 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		if err = ipsMgr.DeleteFromSet(podIPSetName, cachedNpmPodObj.PodIP, podKey); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to delete pod from label ipset with err: %v", err)
 		}
-	}
-
-	// Add the pod to its label's ipset.
-	for _, addIPSetName := range addToIPSets {
-		log.Logf("Adding pod %s to ipset %s", newPodObj.Status.PodIP, addIPSetName)
-		if err = ipsMgr.AddToSet(addIPSetName, newPodObj.Status.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
-			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to add pod to label ipset with err: %v", err)
+		// {IMPORTANT} The order of compared list will be key and then key+val. NPM should only append after both key
+		// key + val ipsets are worked on. 0th index will be key and 1st index will be value of the label
+		removedLabel := util.GetLabelKVFromSet(podIPSetName)
+		if len(removedLabel) > 1 {
+			cachedNpmPodObj.removeLabelsWithKey(removedLabel[0])
 		}
 	}
 
+	addNamedPortIpsets := false
 	// (TODO): optimize named port addition and deletions.
 	// named ports are mostly static once configured in todays usage pattern
 	// so keeping this simple by deleting all and re-adding
@@ -508,14 +538,35 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		if err = manageNamedPortIpsets(ipsMgr, cachedNpmPodObj.ContainerPorts, podKey, cachedNpmPodObj.PodIP, DeleteNamedPortIpsets); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to delete pod from named port ipset with err: %v", err)
 		}
+		addNamedPortIpsets = true
+	}
+
+	// Updating pod cache with new npmPod information
+	c.npMgr.PodMap[podKey] = newNpmPod(newPodObj)
+
+	// Add the pod to its label's ipset.
+	for _, addIPSetName := range addToIPSets {
+		log.Logf("Adding pod %s to ipset %s", newPodObj.Status.PodIP, addIPSetName)
+		if err = ipsMgr.AddToSet(addIPSetName, newPodObj.Status.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
+			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to add pod to label ipset with err: %v", err)
+		}
+		// {IMPORTANT} Same as above order is assumed to be key and then key+val. NPM should only append to existing labels
+		// only after both ipsets for a given label's key value pair are added successfully
+		addedLabel := util.GetLabelKVFromSet(addIPSetName)
+		if len(addedLabel) > 1 {
+			c.npMgr.PodMap[podKey].appendLabels(map[string]string{addedLabel[0]: addedLabel[1]}, false)
+		}
+	}
+	// This will ensure after all labels are worked on to overwrite. This way will reduce any bugs introduced above
+	c.npMgr.PodMap[podKey].appendLabels(newPodObj.Labels, true)
+
+	if addNamedPortIpsets {
 		// Add new pod's named ports from its ipset.
 		if err = manageNamedPortIpsets(ipsMgr, newPodPorts, podKey, newPodObj.Status.PodIP, AddNamedPortIpsets); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to add pod to named port ipset with err: %v", err)
 		}
 	}
-
-	// Updating pod cache with new npmPod information
-	c.npMgr.PodMap[podKey] = newNpmPod(newPodObj)
+	c.npMgr.PodMap[podKey].appendContainerPorts(newPodObj)
 
 	return nil
 }
@@ -540,12 +591,18 @@ func (c *podController) cleanUpDeletedPod(podObj *corev1.Pod) error {
 	}
 
 	// Get lists of podLabelKey and podLabelKey + podLavelValue ,and then start deleting them from ipsets
-	deleteFromIPSets := util.GetIPSetListFromLabels(cachedNpmPodObj.Labels)
-	for _, podIPSetName := range deleteFromIPSets {
+	for labelKey, labelVal := range cachedNpmPodObj.Labels {
+		log.Logf("Deleting pod %s from ipset %s", cachedNpmPodObj.PodIP, labelKey)
+		if err = ipsMgr.DeleteFromSet(labelKey, cachedNpmPodObj.PodIP, podKey); err != nil {
+			return fmt.Errorf("[cleanUpDeletedPod] Error: failed to delete pod from label ipset with err: %v", err)
+		}
+
+		podIPSetName := util.GetIpSetFromLabelKV(labelKey, labelVal)
 		log.Logf("Deleting pod %s from ipset %s", cachedNpmPodObj.PodIP, podIPSetName)
 		if err = ipsMgr.DeleteFromSet(podIPSetName, cachedNpmPodObj.PodIP, podKey); err != nil {
 			return fmt.Errorf("[cleanUpDeletedPod] Error: failed to delete pod from label ipset with err: %v", err)
 		}
+		cachedNpmPodObj.removeLabelsWithKey(labelKey)
 	}
 
 	// Delete pod's named ports from its ipset. Need to pass true in the manageNamedPortIpsets function call
