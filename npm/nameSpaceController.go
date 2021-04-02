@@ -25,6 +25,13 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+type LabelAppendOperation bool
+
+const (
+	ClearExitingLabels    LabelAppendOperation = true
+	AppendToExitingLabels LabelAppendOperation = false
+)
+
 type Namespace struct {
 	name            string
 	LabelsMap       map[string]string // NameSpace labels
@@ -64,7 +71,7 @@ func (nsObj *Namespace) setResourceVersion(rv string) {
 	nsObj.resourceVersion = util.ParseResourceVersion(rv)
 }
 
-func (nsObj *Namespace) appendLabels(new map[string]string, clear bool) {
+func (nsObj *Namespace) appendLabels(new map[string]string, clear LabelAppendOperation) {
 	if clear {
 		nsObj.LabelsMap = make(map[string]string)
 	}
@@ -363,7 +370,7 @@ func (nsc *nameSpaceController) syncAddNameSpace(nsObj *corev1.Namespace) error 
 		}
 
 		// Append succeeded labels to the cache NS obj
-		ns.appendLabels(map[string]string{nsLabelKey: nsLabelVal}, false)
+		ns.appendLabels(map[string]string{nsLabelKey: nsLabelVal}, AppendToExitingLabels)
 	}
 
 	ns.setResourceVersion(nsObj.GetObjectMeta().GetResourceVersion())
@@ -423,12 +430,12 @@ func (nsc *nameSpaceController) syncUpdateNameSpace(newNsObj *corev1.Namespace) 
 		// only after both ipsets for a given label's key value pair are added successfully
 		addedLabel := util.GetLabelKVFromSet(nsLabelVal)
 		if len(addedLabel) > 1 {
-			curNsObj.appendLabels(map[string]string{addedLabel[0]: addedLabel[1]}, false)
+			curNsObj.appendLabels(map[string]string{addedLabel[0]: addedLabel[1]}, AppendToExitingLabels)
 		}
 	}
 
 	// Append all labels to the cache NS obj
-	curNsObj.appendLabels(newNsLabel, true)
+	curNsObj.appendLabels(newNsLabel, ClearExitingLabels)
 	curNsObj.setResourceVersion(newNsObj.GetObjectMeta().GetResourceVersion())
 	nsc.npMgr.NsMap[newNsName] = curNsObj
 

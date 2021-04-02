@@ -92,7 +92,7 @@ func (nPod *NpmPod) getPodObjFromNpmPodObj() *corev1.Pod {
 	}
 }
 
-func (nPod *NpmPod) appendLabels(new map[string]string, clear bool) {
+func (nPod *NpmPod) appendLabels(new map[string]string, clear LabelAppendOperation) {
 	if clear {
 		nPod.Labels = make(map[string]string)
 	}
@@ -107,10 +107,6 @@ func (nPod *NpmPod) removeLabelsWithKey(key string) {
 
 func (nPod *NpmPod) appendContainerPorts(podObj *corev1.Pod) {
 	nPod.ContainerPorts = getContainerPortList(podObj)
-}
-
-func (nPod *NpmPod) removeContainerPorts(podObj *corev1.Pod) {
-	nPod.ContainerPorts = []corev1.ContainerPort{}
 }
 
 type podController struct {
@@ -435,7 +431,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 		if err = ipsMgr.AddToSet(podIPSetName, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
 			return fmt.Errorf("[syncAddedPod] Error: failed to add pod to label ipset with err: %v", err)
 		}
-		npmPodObj.appendLabels(map[string]string{labelKey: labelVal}, false)
+		npmPodObj.appendLabels(map[string]string{labelKey: labelVal}, AppendToExitingLabels)
 	}
 
 	// Add pod's named ports from its ipset.
@@ -554,11 +550,11 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		// only after both ipsets for a given label's key value pair are added successfully
 		addedLabel := util.GetLabelKVFromSet(addIPSetName)
 		if len(addedLabel) > 1 {
-			c.npMgr.PodMap[podKey].appendLabels(map[string]string{addedLabel[0]: addedLabel[1]}, false)
+			c.npMgr.PodMap[podKey].appendLabels(map[string]string{addedLabel[0]: addedLabel[1]}, AppendToExitingLabels)
 		}
 	}
 	// This will ensure after all labels are worked on to overwrite. This way will reduce any bugs introduced above
-	c.npMgr.PodMap[podKey].appendLabels(newPodObj.Labels, true)
+	c.npMgr.PodMap[podKey].appendLabels(newPodObj.Labels, ClearExitingLabels)
 
 	if addNamedPortIpsets {
 		// Add new pod's named ports from its ipset.
