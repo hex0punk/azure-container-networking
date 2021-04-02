@@ -412,6 +412,7 @@ func (nsc *nameSpaceController) syncUpdateNameSpace(newNsObj *corev1.Namespace) 
 		}
 		// {IMPORTANT} The order of compared list will be key and then key+val. NPM should only append after both key
 		// key + val ipsets are worked on. 0th index will be key and 1st index will be value of the label
+		// (TODO) need to remove this ordering dependency
 		removedLabel := util.GetLabelKVFromSet(nsLabelVal)
 		if len(removedLabel) > 1 {
 			curNsObj.removeLabelsWithKey(removedLabel[0])

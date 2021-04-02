@@ -419,7 +419,6 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	c.npMgr.PodMap[podKey] = npmPodObj
 
 	// Get lists of podLabelKey and podLabelKey + podLavelValue ,and then start adding them to ipsets.
-	//addToIPSets := util.GetIPSetListFromLabels(npmPodObj.Labels)
 	for labelKey, labelVal := range npmPodObj.Labels {
 		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, labelKey)
 		if err = ipsMgr.AddToSet(labelKey, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
@@ -457,7 +456,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		// (TODO): need to change newNS function. It always returns "nil"
 		c.npMgr.NsMap[newPodObjNs], _ = newNs(newPodObjNs)
 		log.Logf("Creating set: %v, hashedSet: %v", newPodObjNs, util.GetHashedName(newPodObjNs))
-		if err = ipsMgr.CreateSet(newPodObjNs, append([]string{util.IpsetNetHashFlag})); err != nil {
+		if err = ipsMgr.CreateSet(newPodObjNs, []string{util.IpsetNetHashFlag}); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: creating ipset %s with err: %v", newPodObjNs, err)
 		}
 	}
@@ -548,6 +547,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		}
 		// {IMPORTANT} Same as above order is assumed to be key and then key+val. NPM should only append to existing labels
 		// only after both ipsets for a given label's key value pair are added successfully
+		// (TODO) will need to remove this ordering dependency
 		addedLabel := util.GetLabelKVFromSet(addIPSetName)
 		if len(addedLabel) > 1 {
 			c.npMgr.PodMap[podKey].appendLabels(map[string]string{addedLabel[0]: addedLabel[1]}, AppendToExitingLabels)
