@@ -419,7 +419,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	c.npMgr.PodMap[podKey] = npmPodObj
 
 	// Get lists of podLabelKey and podLabelKey + podLavelValue ,and then start adding them to ipsets.
-	for labelKey, labelVal := range npmPodObj.Labels {
+	for labelKey, labelVal := range podObj.Labels {
 		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, labelKey)
 		if err = ipsMgr.AddToSet(labelKey, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
 			return fmt.Errorf("[syncAddedPod] Error: failed to add pod to label ipset with err: %v", err)
@@ -434,7 +434,9 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	}
 
 	// Add pod's named ports from its ipset.
-	if err = manageNamedPortIpsets(ipsMgr, npmPodObj.ContainerPorts, podKey, npmPodObj.PodIP, AddNamedPortIpsets); err != nil {
+	log.Logf("Adding named port ipsets")
+	containerPorts := getContainerPortList(podObj)
+	if err = manageNamedPortIpsets(ipsMgr, containerPorts, podKey, npmPodObj.PodIP, AddNamedPortIpsets); err != nil {
 		return fmt.Errorf("[syncAddedPod] Error: failed to add pod to named port ipset with err: %v", err)
 	}
 	npmPodObj.appendContainerPorts(podObj)
@@ -653,6 +655,7 @@ func isInvalidPodUpdate(npmPod *NpmPod, newPodObj *corev1.Pod) bool {
 // manageNamedPortIpsets helps with adding or deleting Pod namedPort IPsets.
 func manageNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []corev1.ContainerPort, podKey string, podIP string, namedPortOperation NamedPortOperation) error {
 	for _, port := range portList {
+		log.Logf("port is %+v", port)
 		if port.Name == "" {
 			continue
 		}
@@ -673,6 +676,7 @@ func manageNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []corev1.Containe
 				return err
 			}
 		case AddNamedPortIpsets:
+			log.Logf("in Adding named port ipsets")
 			if err = ipsMgr.AddToSet(namedPortname, fmt.Sprintf("%s,%s%d", podIP, protocol, port.ContainerPort), util.IpsetIPPortHashFlag, podKey); err != nil {
 				return err
 			}
